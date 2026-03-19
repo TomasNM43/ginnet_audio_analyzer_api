@@ -15,7 +15,7 @@ from config import (
 )
 
 # Importar routes
-from routes import spectrogram_routes, transcription_routes, analysis_routes, report_routes
+from routes import spectrogram_routes, transcription_routes, analysis_routes, report_routes, pipeline_routes
 
 # Crear aplicación FastAPI
 app = FastAPI(
@@ -39,6 +39,7 @@ app.include_router(spectrogram_routes.router)
 app.include_router(transcription_routes.router)
 app.include_router(analysis_routes.router)
 app.include_router(report_routes.router)
+app.include_router(pipeline_routes.router)
 
 # Servir archivos estáticos (resultados, reportes, espectrogramas)
 if os.path.exists(RESULTS_DIR):
@@ -76,7 +77,8 @@ async def root():
             "spectrograms": "/api/spectrograms",
             "transcription": "/api/transcription",
             "analysis": "/api/analysis",
-            "reports": "/api/reports"
+            "reports": "/api/reports",
+            "pipeline": "/api/pipeline"
         }
     }
 
@@ -134,6 +136,10 @@ async def get_api_info():
                 "list": "GET /api/reports/list",
                 "download": "GET /api/reports/download/{report_name}",
                 "delete": "DELETE /api/reports/delete/{report_name}"
+            },
+            "pipeline": {
+                "full_analysis": "POST /api/pipeline/analyze",
+                "transcription": "POST /api/pipeline/transcribe"
             }
         }
     }
