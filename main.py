@@ -15,7 +15,7 @@ from config import (
 )
 
 # Importar routes
-from routes import spectrogram_routes, transcription_routes, analysis_routes, report_routes, pipeline_routes
+from routes import spectrogram_routes, transcription_routes, analysis_routes, report_routes, pipeline_routes, video_routes, photo_routes
 
 # Crear aplicación FastAPI
 app = FastAPI(
@@ -40,6 +40,8 @@ app.include_router(transcription_routes.router)
 app.include_router(analysis_routes.router)
 app.include_router(report_routes.router)
 app.include_router(pipeline_routes.router)
+app.include_router(video_routes.router)
+app.include_router(photo_routes.router)
 
 # Servir archivos estáticos (resultados, reportes, espectrogramas)
 if os.path.exists(RESULTS_DIR):

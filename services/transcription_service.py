@@ -15,7 +15,7 @@ class TranscriptionService:
     @staticmethod
     def convert_to_wav(audio_path: str) -> Optional[str]:
         """
-        Convierte cualquier formato de audio a WAV temporal
+        Convierte cualquier formato de audio a WAV temporal con formato compatible para Google API
         
         Args:
             audio_path: Ruta al archivo de audio
@@ -24,13 +24,15 @@ class TranscriptionService:
             Ruta al archivo WAV temporal o None si hay error
         """
         try:
-            if audio_path.lower().endswith('.wav'):
-                return audio_path
+            # Cargar audio con librosa y resampling a 16kHz (requerido por Google)
+            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
             
-            audio = AudioSegment.from_file(audio_path)
+            # Crear archivo temporal WAV
             temp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-            audio.export(temp_wav.name, format='wav')
             temp_wav.close()
+            
+            # Guardar con formato compatible: 16kHz, mono, 16-bit PCM
+            sf.write(temp_wav.name, audio, 16000, subtype='PCM_16')
             
             return temp_wav.name
         except Exception as e:
@@ -54,7 +56,8 @@ class TranscriptionService:
             Tupla (transcripción, método usado)
         """
         try:
-            y, sr_rate = librosa.load(wav_path, sr=None)
+            # Cargar audio a 16kHz (formato compatible con Google)
+            y, sr_rate = librosa.load(wav_path, sr=16000, mono=True)
             duration = librosa.get_duration(y=y, sr=sr_rate)
             
             if duration <= segment_length:
@@ -73,11 +76,11 @@ class TranscriptionService:
                 
                 temp_segment = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
                 temp_segment.close()
-                sf.write(temp_segment.name, segment, sr_rate)
+                # Guardar con formato compatible: 16kHz, mono, 16-bit PCM
+                sf.write(temp_segment.name, segment, 16000, subtype='PCM_16')
                 
                 try:
                     with sr.AudioFile(temp_segment.name) as source:
-                        recognizer.adjust_for_ambient_noise(source, duration=0.5)
                         audio_data = recognizer.record(source)
                         
                     try:
@@ -85,8 +88,8 @@ class TranscriptionService:
                         segments_text.append(f"[{int(start_time//60)}:{int(start_time%60):02d}-{int(end_time//60)}:{int(end_time%60):02d}] {segment_text}")
                     except sr.UnknownValueError:
                         segments_text.append(f"[{int(start_time//60)}:{int(start_time%60):02d}-{int(end_time//60)}:{int(end_time%60):02d}] [Inaudible]")
-                    except sr.RequestError:
-                        segments_text.append(f"[{int(start_time//60)}:{int(start_time%60):02d}-{int(end_time//60)}:{int(end_time%60):02d}] [Error de API]")
+                    except sr.RequestError as e:
+                        segments_text.append(f"[{int(start_time//60)}:{int(start_time%60):02d}-{int(end_time//60)}:{int(end_time%60):02d}] [Error de API: {str(e)}]")
                         
                 finally:
                     try:
@@ -123,26 +126,28 @@ class TranscriptionService:
         recognizer.phrase_threshold = 0.3
         recognizer.non_speaking_duration = 0.8
         
+        # Convertir a WAV con formato compatible (16kHz, mono, 16-bit PCM)
         wav_path = TranscriptionService.convert_to_wav(audio_path)
         if wav_path is None:
-            return None, "Error al convertir el archivo de audio"
+            return "Error al convertir el archivo de audio", "Error de conversión"
+        
+        cleanup_wav = True  # Siempre limpiar el archivo temporal generado
         
         try:
             # Verificar duración
             try:
-                y, sr_rate = librosa.load(wav_path, sr=None)
+                y, sr_rate = librosa.load(wav_path, sr=16000, mono=True)
                 duration = librosa.get_duration(y=y, sr=sr_rate)
                 
                 if duration > max_duration:
                     return (f"[Archivo demasiado largo ({duration:.1f}s). "
                            f"Máximo permitido: {max_duration}s. Use la función de segmentación.]",
                            "Archivo muy largo")
-            except:
-                pass
+            except Exception as e:
+                print(f"Error verificando duración: {e}")
             
             # Cargar archivo de audio
             with sr.AudioFile(wav_path) as source:
-                recognizer.adjust_for_ambient_noise(source, duration=1)
                 audio_data = recognizer.record(source)
             
             # Método 1: Google Speech Recognition
@@ -154,24 +159,20 @@ class TranscriptionService:
                 )
                 return text, "Google Speech Recognition"
             except sr.UnknownValueError:
-                pass
+                return "[Audio no reconocible - sin palabras detectadas]", "Audio inaudible"
             except sr.RequestError as e:
                 print(f"Error Google API: {e}")
+                # Intentar con segmentación si falla la API
+                try:
+                    return TranscriptionService.transcribe_by_segments(wav_path, recognizer, language, segment_length=30)
+                except Exception as seg_error:
+                    return f"[Error de API: {str(e)}]", "Error de API Google"
             
-            # Método 2: Reconocimiento por segmentos
-            try:
-                return TranscriptionService.transcribe_by_segments(wav_path, recognizer, language)
-            except:
-                pass
-            
-            # Si todos fallan
-            return "[No se pudo transcribir el audio con ningún método disponible]", "Error - todos los métodos fallaron"
-        
         except Exception as e:
             return f"[Error procesando archivo: {str(e)}]", "Error de procesamiento"
         
         finally:
-            if wav_path != audio_path and os.path.exists(wav_path):
+            if cleanup_wav and os.path.exists(wav_path):
                 try:
                     os.unlink(wav_path)
                 except:

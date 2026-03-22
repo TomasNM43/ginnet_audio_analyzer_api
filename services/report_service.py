@@ -12,6 +12,14 @@ from docx.shared import Inches
 from PIL import Image
 from typing import Dict, List
 
+# ReportLab imports para PDF
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak, Table, TableStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+
 class ReportService:
     """Servicio para generar reportes consolidados"""
     
@@ -67,7 +75,7 @@ class ReportService:
     def generate_consolidated_report(detections_by_file: Dict, audio_files: List[str],
                                     output_dir: str = '.') -> Dict[str, any]:
         """
-        Genera un reporte consolidado en formato Word
+        Genera un reporte consolidado en formato PDF
         
         Args:
             detections_by_file: Diccionario con detecciones por archivo
@@ -77,43 +85,81 @@ class ReportService:
         Returns:
             Diccionario con información del reporte generado
         """
-        doc = Document()
-        doc.add_heading('Reporte Consolidado de Análisis de Audio', level=1)
+        # Crear nombre del archivo PDF
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_name = f'Reporte_Consolidado_{timestamp}.pdf'
+        report_path = os.path.join(output_dir, report_name)
         
-        # Información general
-        doc.add_heading('Información General', level=2)
-        doc.add_paragraph(f'Fecha de análisis: {datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")}')
-        doc.add_paragraph(f'Número de archivos analizados: {len(audio_files)}')
+        # Configurar el documento PDF
+        doc = SimpleDocTemplate(report_path, pagesize=letter,
+                              rightMargin=72, leftMargin=72,
+                              topMargin=72, bottomMargin=18)
+        
+        # Contenedor de elementos del PDF
+        story = []
+        
+        # Estilos
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor=colors.HexColor('#1a5490'),
+            spaceAfter=30,
+            alignment=TA_CENTER
+        )
+        heading_style = ParagraphStyle(
+            'CustomHeading',
+            parent=styles['Heading2'],
+            fontSize=16,
+            textColor=colors.HexColor('#1a5490'),
+            spaceAfter=12,
+            spaceBefore=12
+        )
+        normal_style = styles['Normal']
+        
+        # Título
+        title = Paragraph("Reporte Consolidado de Análisis de Audio", title_style)
+        story.append(title)
+        story.append(Spacer(1, 20))
+        
+        # Información General
+        story.append(Paragraph("Información General", heading_style))
+        fecha_analisis = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        story.append(Paragraph(f"<b>Fecha de análisis:</b> {fecha_analisis}", normal_style))
+        story.append(Paragraph(f"<b>Número de archivos analizados:</b> {len(audio_files)}", normal_style))
+        story.append(Spacer(1, 20))
         
         # Lista de archivos procesados
-        doc.add_heading('Archivos Procesados', level=2)
+        story.append(Paragraph("Archivos Procesados", heading_style))
         for i, audio_file in enumerate(audio_files, 1):
             file_name = os.path.basename(audio_file) if isinstance(audio_file, str) else audio_file
-            doc.add_paragraph(f'{i}. {file_name}')
+            story.append(Paragraph(f"{i}. {file_name}", normal_style))
+        story.append(Spacer(1, 20))
         
         # Crear y agregar gráfico resumen
         chart_path = os.path.join(output_dir, 'temp_summary_chart.png')
         ReportService.create_summary_chart(detections_by_file, chart_path)
         
-        doc.add_heading('Gráfico Resumen de Detecciones', level=2)
-        doc.add_paragraph('El siguiente gráfico muestra un resumen de las detecciones encontradas en cada archivo de audio:')
+        story.append(Paragraph("Gráfico Resumen de Detecciones", heading_style))
+        story.append(Paragraph("El siguiente gráfico muestra un resumen de las detecciones encontradas en cada archivo de audio:", normal_style))
+        story.append(Spacer(1, 12))
         
         try:
-            img = Image.open(chart_path)
-            img.thumbnail((Inches(6.0 * 96), Inches(4.0 * 96)))
-            temp_chart_resized = os.path.join(output_dir, 'temp_chart_resized.png')
-            img.save(temp_chart_resized)
-            doc.add_picture(temp_chart_resized, width=Inches(6.0))
-            
-            if os.path.exists(temp_chart_resized):
-                os.remove(temp_chart_resized)
+            # Agregar imagen del gráfico
+            img = RLImage(chart_path, width=6.5*inch, height=4*inch)
+            story.append(img)
+            story.append(Spacer(1, 20))
         except Exception as e:
-            doc.add_paragraph(f'Error al insertar gráfico: {e}')
+            story.append(Paragraph(f"Error al insertar gráfico: {e}", normal_style))
+            story.append(Spacer(1, 12))
         
-        # Resumen estadístico
-        doc.add_heading('Resumen Estadístico', level=2)
+        # Resumen Estadístico
+        story.append(Paragraph("Resumen Estadístico", heading_style))
+        
         total_segments = 0
         total_detections = 0
+        estadisticas = []
         
         for file_prefix, data in detections_by_file.items():
             segments_count = len(data['segments'])
@@ -122,16 +168,18 @@ class ReportService:
             total_detections += detections_count
             
             detection_percentage = (detections_count / segments_count * 100) if segments_count > 0 else 0
-            doc.add_paragraph(f'• {file_prefix}: {detections_count}/{segments_count} segmentos con detección ({detection_percentage:.1f}%)')
+            estadisticas.append(f"• <b>{file_prefix}:</b> {detections_count}/{segments_count} segmentos con detección ({detection_percentage:.1f}%)")
         
+        for stat in estadisticas:
+            story.append(Paragraph(stat, normal_style))
+        
+        story.append(Spacer(1, 12))
         overall_percentage = (total_detections / total_segments * 100) if total_segments > 0 else 0
-        doc.add_paragraph(f'\nResumen general: {total_detections}/{total_segments} segmentos con detección ({overall_percentage:.1f}%)')
+        resumen_general = f"<b>Resumen general:</b> {total_detections}/{total_segments} segmentos con detección ({overall_percentage:.1f}%)"
+        story.append(Paragraph(resumen_general, normal_style))
         
-        # Guardar documento
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_name = f'Reporte_Consolidado_{timestamp}.docx'
-        report_path = os.path.join(output_dir, report_name)
-        doc.save(report_path)
+        # Generar el PDF
+        doc.build(story)
         
         # Limpiar archivos temporales
         if os.path.exists(chart_path):
