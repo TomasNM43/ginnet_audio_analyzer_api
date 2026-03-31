@@ -50,7 +50,6 @@ reports/
 *.flac
 *.m4a
 *.docx
-*.txt
 
 # Logs
 *.log
