@@ -12,7 +12,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Directorios de trabajo
 TEMP_FILES_DIR = os.path.join(BASE_DIR, 'temp_files')
-UPLOADS_DIR = os.path.join(BASE_DIR, 'uploads')
 SPECTROGRAMS_DIR = os.path.join(BASE_DIR, 'spectrograms')
 SPECTROGRAMS_RANGE_DIR = os.path.join(BASE_DIR, 'spectrograms_time_range')
 SPECTROGRAMS_JUMPS_DIR = os.path.join(BASE_DIR, 'spectrograms_jumps')
@@ -22,7 +21,7 @@ MODELS_DIR = os.path.join(BASE_DIR, 'models')
 MODELS_BRIGHTNESS_DIR = os.path.join(BASE_DIR, 'modelos_brightness')
 
 # Crear directorios si no existen
-for directory in [TEMP_FILES_DIR, UPLOADS_DIR, SPECTROGRAMS_DIR, 
+for directory in [TEMP_FILES_DIR, SPECTROGRAMS_DIR, 
                   SPECTROGRAMS_RANGE_DIR, SPECTROGRAMS_JUMPS_DIR, 
                   RESULTS_DIR, REPORTS_DIR, MODELS_DIR, MODELS_BRIGHTNESS_DIR]:
     os.makedirs(directory, exist_ok=True)

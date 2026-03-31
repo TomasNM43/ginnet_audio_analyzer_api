@@ -7,6 +7,31 @@ from typing import Dict, List
 from datetime import datetime
 
 
+def apply_laplacian_filter(gray_image: np.ndarray) -> np.ndarray:
+    """
+    Aplica un filtro Laplaciano a una imagen en escala de grises.
+    Retorna la imagen con el filtro aplicado.
+    """
+    laplacian = cv2.Laplacian(gray_image, cv2.CV_64F)
+    # Convertir a escala 0-255
+    laplacian = np.absolute(laplacian)
+    laplacian = np.uint8(laplacian)
+    return laplacian
+
+
+def apply_sobel_filter(gray_image: np.ndarray) -> np.ndarray:
+    """
+    Aplica el filtro Sobel (magnitud) a una imagen en escala de grises.
+    Retorna la imagen con el filtro aplicado.
+    """
+    sobelx = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
+    # Calcular la magnitud
+    magnitude = np.sqrt(sobelx**2 + sobely**2)
+    magnitude = np.uint8(magnitude)
+    return magnitude
+
+
 def adjust_brightness(image: np.ndarray, brightness_value: int) -> np.ndarray:
     """Ajusta el brillo de una imagen. brightness_value: -100 a 100."""
     if brightness_value == 0:
@@ -80,9 +105,11 @@ def extract_frames(video_path: str, config: Dict) -> Dict:
 
             if save_gray:
                 gray = cv2.cvtColor(brightened, cv2.COLOR_BGR2GRAY)
+                # Aplicar filtro Sobel a la imagen en escala de grises
+                gray_filtered = apply_sobel_filter(gray)
                 filename = (f"grayscale/frame_{frame_number:06d}"
-                            f"_t{time_seconds:.2f}s_bright{brightness_value:+d}_gray.png")
-                _, buf = cv2.imencode('.png', gray)
+                            f"_t{time_seconds:.2f}s_bright{brightness_value:+d}_gray_sobel.png")
+                _, buf = cv2.imencode('.png', gray_filtered)
                 zf.writestr(filename, buf.tobytes())
 
             extraction_info.append({

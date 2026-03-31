@@ -72,6 +72,12 @@ class ReportService:
         return output_path
     
     @staticmethod
+    def _seconds_to_mmss(seconds: int) -> str:
+        """Convierte segundos a formato M:SS (ej. 125 → '2:05')"""
+        m, s = divmod(int(seconds), 60)
+        return f"{m}:{s:02d}"
+
+    @staticmethod
     def generate_consolidated_report(detections_by_file: Dict, audio_files: List[str],
                                     output_dir: str = '.') -> Dict[str, any]:
         """
@@ -178,6 +184,70 @@ class ReportService:
         resumen_general = f"<b>Resumen general:</b> {total_detections}/{total_segments} segmentos con detección ({overall_percentage:.1f}%)"
         story.append(Paragraph(resumen_general, normal_style))
         
+        # ── Sección: Espectrogramas analizados ──────────────────────────────────
+        story.append(PageBreak())
+
+        detection_label_style = ParagraphStyle(
+            'DetectionSegment',
+            parent=normal_style,
+            textColor=colors.red,
+            fontName='Helvetica-Bold',
+            fontSize=11,
+            spaceAfter=4
+        )
+        normal_segment_style = ParagraphStyle(
+            'NormalSegment',
+            parent=normal_style,
+            fontSize=11,
+            spaceAfter=4
+        )
+
+        story.append(Paragraph("Espectrogramas Analizados", heading_style))
+        story.append(Paragraph(
+            "Se muestran todos los espectrogramas generados durante el análisis. "
+            "Los segmentos marcados en rojo contienen una posible detección de corte.",
+            normal_style
+        ))
+        story.append(Spacer(1, 12))
+
+        for file_prefix, data in detections_by_file.items():
+            story.append(Paragraph(f"<b>Archivo:</b> {file_prefix}", normal_style))
+            story.append(Spacer(1, 6))
+
+            segments_sorted = sorted(data['segments'], key=lambda seg: seg['start'])
+
+            for segment in segments_sorted:
+                start_str = ReportService._seconds_to_mmss(segment['start'])
+                end_str = ReportService._seconds_to_mmss(segment['end'])
+                time_range = f"{start_str} - {end_str}"
+
+                if segment.get('has_detection'):
+                    seg_label = Paragraph(
+                        f"<b>&#9888; Posible detecci&#243;n &mdash; {time_range}</b>",
+                        detection_label_style
+                    )
+                else:
+                    seg_label = Paragraph(
+                        f"Segmento: {time_range}",
+                        normal_segment_style
+                    )
+
+                story.append(seg_label)
+
+                img_path = segment.get('image_path')
+                if img_path and os.path.exists(img_path):
+                    try:
+                        spec_img = RLImage(img_path, width=6 * inch, height=2.5 * inch)
+                        story.append(spec_img)
+                    except Exception as img_err:
+                        story.append(Paragraph(f"(Error al insertar imagen: {img_err})", normal_style))
+                else:
+                    story.append(Paragraph("(Imagen no disponible)", normal_style))
+
+                story.append(Spacer(1, 8))
+
+            story.append(Spacer(1, 16))
+
         # Generar el PDF
         doc.build(story)
         

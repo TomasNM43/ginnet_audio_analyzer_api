@@ -24,31 +24,39 @@ async def analizar_fotos(
     paquete_id: Optional[int] = Form(None, description="ID del paquete para actualizar en base de datos")
 ):
     """
-    Realiza análisis ELA sobre las imágenes encontradas en la ruta especificada.
+    Realiza análisis de fotos usando filtro Sobel color y detección de manchas con modelos de brillo.
+    Proceso:
+    1. Aplica filtro Sobel por canal BGR (conservando color), igual que ejemplo.png
+    2. Ejecuta los modelos de modelos_brightness (best_20, best_30, best_40) para detectar manchas
+    3. Guarda imágenes con las detecciones marcadas
+
     La ruta puede ser un archivo individual o un directorio con múltiples imágenes.
-    Crea carpeta ELA_Analysis/Resultados para almacenar los resultados localmente.
+    Crea carpeta Analisis_Fotos/Resultados para almacenar los resultados localmente.
     Retorna JSON con información del proceso y rutas de los archivos guardados.
-    
+
     - **file_path**: Ruta completa del archivo o directorio con imágenes
     - **paquete_id**: ID del paquete para actualizar en base de datos (opcional)
     """
-    from services.ela_service import analyze_image_bytes
-    
+    import cv2
+    import numpy as np
+    from ultralytics import YOLO
+    from services.grayscale_conversion_service import apply_sobel_color_filter
+    from config import MODELS_BRIGHTNESS_DIR
+
     path = Path(file_path)
-    
+
     # Validar que la ruta existe
     if not path.exists():
         raise HTTPException(
             status_code=404,
             detail=f"La ruta especificada no existe: {file_path}"
         )
-    
+
     # Recopilar archivos a analizar
     image_files = []
     supported_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
-    
+
     if path.is_file():
-        # Es un archivo individual
         if path.suffix.lower() in supported_extensions:
             image_files.append(path)
             file_dir = path.parent
@@ -58,7 +66,6 @@ async def analizar_fotos(
                 detail=f"El archivo no tiene una extensión de imagen soportada: {path.suffix}"
             )
     elif path.is_dir():
-        # Es un directorio - buscar todas las imágenes
         file_dir = path
         for ext in supported_extensions:
             image_files.extend(path.glob(f'*{ext}'))
@@ -68,79 +75,131 @@ async def analizar_fotos(
             status_code=400,
             detail="La ruta no es un archivo ni un directorio válido"
         )
-    
+
     if not image_files:
         raise HTTPException(
             status_code=404,
             detail="No se encontraron imágenes en la ruta especificada"
         )
-    
-    # Crear estructura de carpetas ELA_Analysis/Resultados
-    ela_dir = file_dir / "ELA_Analysis"
-    if ela_dir.exists():
-        shutil.rmtree(ela_dir)
-    ela_dir.mkdir(exist_ok=True)
-    
-    resultados_dir = ela_dir / "Resultados"
+
+    # Cargar los modelos de brightness con su nivel de brillo correspondiente
+    # Cada modelo fue entrenado con imágenes a las que se aplicó ese nivel de brillo
+    # antes del filtro Sobel, igual que en el pipeline de extracción de fotogramas
+    model_configs = [
+        ('best_20.pt', 20),
+        ('best_30.pt', 30),
+        ('best_40.pt', 40),
+    ]
+    loaded_models = []
+    for mf, brightness_val in model_configs:
+        mp = os.path.join(MODELS_BRIGHTNESS_DIR, mf)
+        if os.path.exists(mp):
+            loaded_models.append((YOLO(mp), brightness_val))
+            print(f"Modelo cargado: {mf} (brillo +{brightness_val})")
+
+    if not loaded_models:
+        raise HTTPException(
+            status_code=500,
+            detail="No se encontraron modelos en la carpeta modelos_brightness"
+        )
+
+    # Crear estructura de carpetas Analisis_Fotos/Resultados
+    analysis_dir = file_dir / "Analisis_Fotos"
+    if analysis_dir.exists():
+        shutil.rmtree(analysis_dir)
+    analysis_dir.mkdir(exist_ok=True)
+
+    resultados_dir = analysis_dir / "Resultados"
     resultados_dir.mkdir(exist_ok=True)
-    
-    # Analizar cada imagen y guardar resultados
+
+    # Analizar cada imagen
     processed_files = []
     error_count = 0
-    
+    total_detections = 0
+
     for image_path in image_files:
         try:
-            with open(image_path, 'rb') as f:
-                content = f.read()
-            result = analyze_image_bytes(content)
-            
-            # Guardar imagen ELA en la carpeta de resultados
-            if 'ela_image_base64' in result:
-                ela_filename = f"ELA_{image_path.stem}.png"
-                ela_path = resultados_dir / ela_filename
-                
-                # Decodificar y guardar la imagen ELA
-                ela_img_data = base64.b64decode(result['ela_image_base64'])
-                with open(ela_path, 'wb') as ela_f:
-                    ela_f.write(ela_img_data)
-                
-                processed_files.append(ela_path)
+            img = cv2.imread(str(image_path))
+            if img is None:
+                print(f"No se pudo leer la imagen: {image_path.name}")
+                error_count += 1
+                continue
+
+            # Original oscurecido para el blend (preserva colores como las manchas azules)
+            darkened_original = np.clip(img.astype(np.float32) * 0.3, 0, 255).astype(np.uint8)
+
+            # Imagen base para dibujar: brillo +30 → Sobel → blend con original oscurecido
+            base_brightened = np.clip(img.astype(np.float32) + 30, 0, 255).astype(np.uint8)
+            base_sobel = apply_sobel_color_filter(base_brightened)
+            output_img = cv2.addWeighted(base_sobel, 0.8, darkened_original, 0.2, 0)
+
+            # Para cada modelo: brillo específico → Sobel → blend con original oscurecido
+            # El blend conserva las manchas de color (azules) visibles para la detección
+            file_detections = 0
+
+            for model, brightness_val in loaded_models:
+                brightened = np.clip(img.astype(np.float32) + brightness_val, 0, 255).astype(np.uint8)
+                sobel = apply_sobel_color_filter(brightened)
+                filtered = cv2.addWeighted(sobel, 0.8, darkened_original, 0.2, 0)
+
+                results = model(filtered)
+                for result in results:
+                    for box in result.boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        conf = float(box.conf[0])
+                        cls = int(box.cls[0])
+                        label = f"{result.names[cls]} {conf:.2f}"
+                        cv2.rectangle(output_img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        cv2.putText(output_img, label, (x1, y1 - 5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                        file_detections += 1
+
+            total_detections += file_detections
+
+            # Guardar imagen resultado en la carpeta de resultados
+            out_filename = f"Analisis_{image_path.stem}.png"
+            out_path = resultados_dir / out_filename
+            cv2.imwrite(str(out_path), output_img)
+            processed_files.append(out_path)
+
         except Exception as e:
+            import traceback
             print(f"Error procesando {image_path.name}: {e}")
+            traceback.print_exc()
             error_count += 1
-    
-    # Crear archivo ZIP con todas las imágenes ELA
+
+    # Crear archivo ZIP con todas las imágenes analizadas
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for ela_file in processed_files:
-            zip_file.write(ela_file, ela_file.name)
-    
+        for result_file in processed_files:
+            zip_file.write(result_file, result_file.name)
+
     zip_bytes = zip_buffer.getvalue()
-    
-    # Guardar el ZIP en la carpeta ELA_Analysis
-    zip_filename = "analisis_ela.zip"
-    zip_path = ela_dir / zip_filename
+
+    # Guardar el ZIP en la carpeta Analisis_Fotos
+    zip_filename = "analisis_fotos.zip"
+    zip_path = analysis_dir / zip_filename
     with open(zip_path, 'wb') as zip_f:
         zip_f.write(zip_bytes)
-    
+
     # Actualizar base de datos con la ruta del ZIP
     db_update_result = None
     if paquete_id is not None:
         from services.database_service import DatabaseService
-        # Convertir todas las barras \\ a /
         zip_path_windows = str(zip_path).replace('\\', '/')
-        print(f"Actualizando base de datos con ruta del ZIP ELA: {zip_path_windows}, paquete_id: {paquete_id}")
+        print(f"Actualizando base de datos con ruta del ZIP: {zip_path_windows}, paquete_id: {paquete_id}")
         db_update_result = DatabaseService.update_paquete_proceso_informe_3(
             zip_path_windows, paquete_id
         )
-    
+
     response = {
         "success": True,
         "images_processed": len(processed_files),
         "images_failed": error_count,
-        "message": f"Análisis ELA completado. {len(processed_files)} imágenes procesadas exitosamente."
+        "total_detections": total_detections,
+        "message": f"Análisis completado. {len(processed_files)} imágenes procesadas, {total_detections} detecciones encontradas."
     }
-    
+
     if db_update_result:
         response["database_update"] = "success"
 
@@ -160,15 +219,19 @@ async def extraer_fotogramas(
     skip_frames: int = Form(1, description="Salto entre frames"),
     brightness: int = Form(20, description="Ajuste de brillo (-100 a 100)"),
     color: bool = Form(True, description="Guardar frames en color"),
-    grayscale: bool = Form(False, description="Guardar frames en escala de grises"),
+    grayscale: bool = Form(False, description="Guardar frames en escala de grises con filtro Sobel"),
     paquete_id: Optional[int] = Form(None, description="ID del paquete para actualizar en base de datos")
 ):
     """
     Extrae fotogramas de un video según los parámetros indicados.
+    Si se selecciona grayscale=True, los fotogramas se convierten a escala de grises
+    y se les aplica un filtro Sobel para detección de bordes.
+    
     Crea carpeta Fotogramas_Extraidos/ y guarda el ZIP localmente.
     Retorna JSON con información del proceso y rutas de los archivos guardados.
     
     - **file_path**: Ruta completa del archivo de video
+    - **grayscale**: Si es True, aplica conversión a escala de grises + filtro Sobel
     - **paquete_id**: ID del paquete para actualizar en base de datos (opcional)
     """
     if not color and not grayscale:
@@ -241,7 +304,14 @@ async def convertir_escala_grises(
     paquete_id: Optional[int] = Form(None, description="ID del paquete para actualizar en base de datos")
 ):
     """
-    Convierte imágenes a escala de grises y genera automáticamente el informe PDF.
+    Convierte imágenes a escala de grises, aplica filtro Sobel para detección de bordes,
+    y genera automáticamente el informe PDF.
+    
+    Proceso:
+    1. Convierte las imágenes a escala de grises
+    2. Aplica filtro Sobel (magnitud de gradiente) para detección de bordes
+    3. Genera informe PDF con los resultados
+    
     La ruta puede ser un archivo individual o un directorio con múltiples imágenes.
     Crea carpeta Escala_Grises/Convertidas/ para el ZIP y Escala_Grises/Reporte/ para el informe PDF.
     Guarda todos los archivos localmente y retorna JSON con información del proceso.
