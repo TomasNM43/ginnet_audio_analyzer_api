@@ -553,9 +553,60 @@ def generate_continuity_report_pdf(analysis_results: List[Dict]) -> bytes:
         story.append(info_table)
         story.append(Spacer(1, 20))
         
+        # ── Gráfico principal: diferencia frame a frame (%) ──
+        if result.get('primary_plot_base64'):
+            story.append(Paragraph("Gráfico Principal: Diferencia Frame a Frame (%)", heading_style))
+            story.append(Paragraph(
+                "Muestra la diferencia absoluta media entre frames consecutivos como porcentaje. "
+                "Las zonas sombreadas en rojo superan el umbral del 10% y se consideran posibles fallos de continuidad.",
+                normal_style
+            ))
+            story.append(Spacer(1, 8))
+            try:
+                primary_bytes = base64.b64decode(result['primary_plot_base64'])
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
+                    tmp.write(primary_bytes)
+                    tmp_path = tmp.name
+                temp_files.append(tmp_path)
+                img = RLImage(tmp_path, width=6.5*inch, height=4*inch)
+                story.append(img)
+            except Exception as e:
+                story.append(Paragraph(f"Error al insertar gráfico principal: {e}", normal_style))
+            story.append(Spacer(1, 12))
+
+            # Tabla de fallos detectados por el gráfico principal
+            primary_discs = result.get('primary_discontinuities', [])
+            story.append(Paragraph(
+                f"Posibles fallos de continuidad detectados (diferencia &gt; 10%): "
+                f"<b>{result.get('primary_discontinuity_count', len(primary_discs))}</b>",
+                normal_style
+            ))
+            if primary_discs:
+                pd_data = [['Segundo', 'Tiempo (mm:ss)', 'Diferencia (%)']]
+                for pd in primary_discs:
+                    pd_data.append([
+                        str(pd['second']),
+                        pd.get('time_formatted', ''),
+                        f"{pd['diff_pct']:.2f}%"
+                    ])
+                pd_table = Table(pd_data, colWidths=[1.5*inch, 2*inch, 2*inch])
+                pd_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#c0392b')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#fdecea')),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ]))
+                story.append(Spacer(1, 8))
+                story.append(pd_table)
+            story.append(Spacer(1, 20))
+
         # Insertar gráfico si viene en base64
         if result.get('plot_base64'):
-            story.append(Paragraph("Gráfico de Análisis de Continuidad", heading_style))
+            story.append(Paragraph("Gráfico de Análisis de Continuidad (Score Combinado)", heading_style))
             try:
                 plot_bytes = base64.b64decode(result['plot_base64'])
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:

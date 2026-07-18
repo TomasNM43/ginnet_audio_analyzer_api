@@ -105,7 +105,7 @@ SUPPORTED_LANGUAGES = {
 
 # Configuración de Base de Datos (Oracle SQL)
 DB_CONFIG = {
-    'user': os.getenv('DB_USER', 'system'),
-    'password': os.getenv('DB_PASSWORD', ''),
-    'dsn': os.getenv('DB_DSN', 'localhost:1521/XEPDB1')  # format: host:port/service_name
+    'user': os.getenv('DB_USER', 'GINNET01'),
+    'password': os.getenv('DB_PASSWORD', 'GINNET2024'),
+    'dsn': os.getenv('DB_DSN', '38.253.155.235:1521/bdginnet')  # format: host:port/service_name
 }

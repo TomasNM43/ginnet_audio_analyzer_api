@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 import os
+import time
 
 # Importar configuración
 from config import (
@@ -24,6 +25,15 @@ app = FastAPI(
     version=API_VERSION,
     contact=API_CONTACT
 )
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.time()
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] --> {request.method} {request.url.path}")
+    response = await call_next(request)
+    elapsed = (time.time() - start) * 1000
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] <-- {request.method} {request.url.path} | {response.status_code} | {elapsed:.1f}ms")
+    return response
 
 # Configurar CORS para permitir llamadas desde .NET
 app.add_middleware(

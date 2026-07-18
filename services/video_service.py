@@ -115,6 +115,8 @@ def analyze_video(video_path: str, yolo_model, brightness_applied: int,
                   output_dir: str, model_path: str) -> Dict:
     """
     Analiza un video con YOLOv8 buscando rectángulos negros.
+    Usa seeking por tiempo (1 frame/segundo) para evitar decodificar
+    frames intermedios — crítico en videos de gran tamaño.
     Retorna diccionario con resultados y metadatos.
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -123,68 +125,77 @@ def analyze_video(video_path: str, yolo_model, brightness_applied: int,
     if not cap.isOpened():
         raise ValueError(f"No se pudo abrir el video: {video_path}")
 
-    frame_count = 0
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_duration = total_frames / fps if fps > 0 else 0
     detections_for_video = []
+    frames_procesados = 0
 
     video_name = os.path.basename(video_path)
-    print(f"Procesando video: {video_name} | Total frames: {total_frames} | FPS: {fps}")
+    total_seconds = int(total_duration)
+    print(f"Procesando video: {video_name} | Duración: {total_seconds}s | FPS: {fps:.2f} | "
+          f"Frames totales: {total_frames}")
 
-    while True:
+    second = 0
+    while second <= total_seconds:
+        # Saltar directamente al segundo objetivo sin decodificar frames intermedios
+        cap.set(cv2.CAP_PROP_POS_MSEC, second * 1000)
         ret, frame = cap.read()
         if not ret:
             break
 
-        if frame_count % max(1, int(fps)) == 0:
-            brightened = adjust_brightness(frame, brightness_applied)
-            gray = cv2.cvtColor(brightened, cv2.COLOR_BGR2GRAY)
+        frame_count = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+        time_seconds = second
 
-            gray_path = os.path.join(output_dir, f"gray_frame_{frame_count}.png")
-            cv2.imwrite(gray_path, gray)
+        brightened = adjust_brightness(frame, brightness_applied)
+        gray = cv2.cvtColor(brightened, cv2.COLOR_BGR2GRAY)
 
-            gray_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-            detections = detect_black_rectangles(yolo_model, gray_rgb)
+        gray_path = os.path.join(output_dir, f"gray_frame_{frame_count}.png")
+        cv2.imwrite(gray_path, gray)
 
-            if detections:
-                detection_frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-                annotated = annotate_frame(detection_frame, detections, frame_count,
-                                           fps, brightness_applied)
-                img_path = os.path.join(output_dir, f"yolo_detection_frame_{frame_count}.png")
-                cv2.imwrite(img_path, annotated)
+        gray_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+        detections = detect_black_rectangles(yolo_model, gray_rgb)
 
-                frame_h, frame_w = frame.shape[:2]
-                time_seconds = frame_count / fps if fps > 0 else frame_count
+        if detections:
+            detection_frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            annotated = annotate_frame(detection_frame, detections, frame_count,
+                                       fps, brightness_applied)
+            img_path = os.path.join(output_dir, f"yolo_detection_frame_{frame_count}.png")
+            cv2.imwrite(img_path, annotated)
 
-                for det in detections:
-                    x, y, w, h = det['bbox']
-                    rel_x = (x / frame_w) * 100
-                    rel_y = (y / frame_h) * 100
-                    rel_w = (w / frame_w) * 100
-                    rel_h = (h / frame_h) * 100
-                    center_x, center_y = x + w // 2, y + h // 2
+            frame_h, frame_w = frame.shape[:2]
 
-                    detections_for_video.append({
-                        'frame': frame_count,
-                        'time': time_seconds,
-                        'bbox': (x, y, w, h),
-                        'center': (center_x, center_y),
-                        'confidence': det['confidence'],
-                        'class_name': det['class_name'],
-                        'class_id': det['class_id'],
-                        'relative_position': (rel_x, rel_y),
-                        'relative_size': (rel_w, rel_h),
-                        'area_pixels': w * h,
-                        'area_percentage': (rel_w * rel_h / 100),
-                        'frame_size': (frame_w, frame_h),
-                        'brightness_applied': brightness_applied,
-                        'detection_image': f"yolo_detection_frame_{frame_count}.png"
-                    })
+            for det in detections:
+                x, y, w, h = det['bbox']
+                rel_x = (x / frame_w) * 100
+                rel_y = (y / frame_h) * 100
+                rel_w = (w / frame_w) * 100
+                rel_h = (h / frame_h) * 100
+                center_x, center_y = x + w // 2, y + h // 2
 
-        frame_count += 1
-        if frame_count % 100 == 0:
-            pct = (frame_count / total_frames * 100) if total_frames > 0 else 0
-            print(f"  Progreso: {pct:.1f}% ({frame_count}/{total_frames})")
+                detections_for_video.append({
+                    'frame': frame_count,
+                    'time': time_seconds,
+                    'bbox': (x, y, w, h),
+                    'center': (center_x, center_y),
+                    'confidence': det['confidence'],
+                    'class_name': det['class_name'],
+                    'class_id': det['class_id'],
+                    'relative_position': (rel_x, rel_y),
+                    'relative_size': (rel_w, rel_h),
+                    'area_pixels': w * h,
+                    'area_percentage': (rel_w * rel_h / 100),
+                    'frame_size': (frame_w, frame_h),
+                    'brightness_applied': brightness_applied,
+                    'detection_image': f"yolo_detection_frame_{frame_count}.png"
+                })
+
+        frames_procesados += 1
+        if frames_procesados % 60 == 0:
+            pct = (second / total_seconds * 100) if total_seconds > 0 else 0
+            print(f"  Progreso: {pct:.1f}% ({second}/{total_seconds}s)")
+
+        second += 1
 
     cap.release()
 
@@ -192,9 +203,10 @@ def analyze_video(video_path: str, yolo_model, brightness_applied: int,
         'video_path': video_path,
         'video_name': video_name,
         'output_dir': output_dir,
-        'total_frames': frame_count,
+        'total_frames': total_frames,
+        'frames_procesados': frames_procesados,
         'fps': fps,
-        'duration': frame_count / fps if fps > 0 else 0,
+        'duration': total_duration,
         'detections': detections_for_video,
         'detection_count': len(detections_for_video),
         'brightness_applied': brightness_applied,

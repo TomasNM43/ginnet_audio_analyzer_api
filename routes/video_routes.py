@@ -84,6 +84,10 @@ async def autenticidad_video(
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=400, detail=f"La ruta no corresponde a un archivo: {file_path}")
 
+    file_size_gb = os.path.getsize(file_path) / (1024 ** 3)
+    if file_size_gb > 0.5:
+        print(f"ADVERTENCIA: Video grande ({file_size_gb:.2f} GB) — procesando con seeking por tiempo.")
+
     yolo_model = _get_yolo_model(brightness)
     if yolo_model is None:
         raise HTTPException(
@@ -198,7 +202,11 @@ async def continuidad_video(
     
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=400, detail=f"La ruta no corresponde a un archivo: {file_path}")
-    
+
+    file_size_gb = os.path.getsize(file_path) / (1024 ** 3)
+    if file_size_gb > 0.5:
+        print(f"ADVERTENCIA: Video grande ({file_size_gb:.2f} GB) — procesando con seeking por tiempo.")
+
     from services.continuity_service import analyze_continuity
     from services.database_service import DatabaseService
 
@@ -221,6 +229,7 @@ async def continuidad_video(
 
         # No retornar euclidean_distances completo (puede ser muy grande), solo resumen
         result.pop('euclidean_distances', None)
+        result.pop('diff_pcts', None)
         # No retornar images de comparación en la respuesta JSON principal
         for disc in result.get('discontinuities', []):
             disc.pop('comparison_image_base64', None)
