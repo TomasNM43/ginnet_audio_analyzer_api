@@ -13,7 +13,7 @@ from typing import List, Dict, Optional
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, PageBreak, Table, TableStyle, KeepTogether
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
 
@@ -346,6 +346,13 @@ def _doc_to_bytes(doc: Document) -> bytes:
     buffer.seek(0)
     return buffer.read()
 
+
+def _image_size(image_bytes: bytes):
+    """Retorna (ancho, alto) de una imagen a partir de sus bytes, usando PIL."""
+    from PIL import Image as PILImage
+    with PILImage.open(io.BytesIO(image_bytes)) as img:
+        return img.size
+
 # ─── Informe de Autenticidad de Video (YOLO) - PDF ──────────────────────────────────────────────
 
 def generate_yolo_report_pdf(all_detections: List[Dict], device: str = 'cpu') -> bytes:
@@ -358,7 +365,7 @@ def generate_yolo_report_pdf(all_detections: List[Dict], device: str = 'cpu') ->
                           rightMargin=72, leftMargin=72,
                           topMargin=72, bottomMargin=18)
     
-    story = []
+    story = []                      
     styles = getSampleStyleSheet()
     
     # Estilos personalizados
@@ -602,6 +609,46 @@ def generate_continuity_report_pdf(analysis_results: List[Dict]) -> bytes:
                 ]))
                 story.append(Spacer(1, 8))
                 story.append(pd_table)
+                story.append(Spacer(1, 16))
+
+                # Fotogramas de cada posible recorte: segundo anterior, del recorte y posterior
+                story.append(Paragraph("Fotogramas de los Posibles Recortes", heading_style))
+                story.append(Paragraph(
+                    "Para cada posible recorte se muestran tres fotogramas consecutivos: "
+                    "el segundo anterior, el segundo en el que ocurre el posible recorte y el segundo posterior.",
+                    normal_style
+                ))
+                story.append(Spacer(1, 8))
+                for pd in primary_discs:
+                    story.append(Paragraph(
+                        f"<b>Segundo {pd['second']}</b> ({pd.get('time_formatted', '')}) "
+                        f"— Diferencia: {pd['diff_pct']:.2f}%",
+                        normal_style
+                    ))
+                    frames_b64 = pd.get('frames_comparison_base64')
+                    if frames_b64:
+                        try:
+                            frame_bytes = base64.b64decode(frames_b64)
+                            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
+                                tmp.write(frame_bytes)
+                                tmp_path = tmp.name
+                            temp_files.append(tmp_path)
+                            img_w, img_h = _image_size(frame_bytes)
+                            display_width = 6.5 * inch
+                            display_height = display_width * (img_h / img_w) if img_w else 2.17 * inch
+                            story.append(RLImage(tmp_path, width=display_width, height=display_height))
+                            story.append(Paragraph(
+                                "<i>Izquierda: segundo anterior · Centro: segundo del recorte · "
+                                "Derecha: segundo posterior</i>",
+                                normal_style
+                            ))
+                        except Exception as e:
+                            story.append(Paragraph(f"Error al insertar fotogramas: {e}", normal_style))
+                    else:
+                        story.append(Paragraph(
+                            "No se pudieron capturar los fotogramas para este recorte.", normal_style
+                        ))
+                    story.append(Spacer(1, 14))
             story.append(Spacer(1, 20))
 
         # Insertar gráfico si viene en base64
@@ -807,5 +854,94 @@ def generate_grayscale_report_pdf(conversion_result: Dict) -> bytes:
     # Construir el PDF
     doc.build(story)
     
+    buffer.seek(0)
+    return buffer.read()
+
+
+# ─── Informe de Variantes de Brillo - PDF ──────────────────────────────────────────────
+
+def generate_brightness_variants_pdf(images_data: List[Dict]) -> bytes:
+    """
+    Genera el PDF de análisis de fotos: cada imagen se muestra entera en su propia página.
+
+    images_data: lista de diccionarios con la forma:
+        {
+            'filename': nombre de la foto original,
+            'pages': [{'label': 'Imagen original', 'bytes': <PNG bytes>}, ...]  # en orden de aparición
+        }
+
+    Retorna el documento PDF como bytes.
+    """
+    buffer = io.BytesIO()
+    margin = 36
+    top_margin = 36
+    doc = SimpleDocTemplate(buffer, pagesize=letter,
+                             rightMargin=margin, leftMargin=margin,
+                             topMargin=top_margin, bottomMargin=margin)
+
+    story = []
+    styles = getSampleStyleSheet()
+    temp_files = []  # Lista para rastrear archivos temporales a eliminar al final
+
+    heading_style = ParagraphStyle(
+        'BrightnessHeading', parent=styles['Heading2'], fontSize=14,
+        textColor=colors.HexColor('#1a5490'), spaceAfter=4, spaceBefore=0, alignment=TA_CENTER
+    )
+    caption_style = ParagraphStyle(
+        'BrightnessCaption', parent=styles['Normal'], fontSize=11,
+        alignment=TA_CENTER, spaceAfter=10
+    )
+    normal_style = styles['Normal']
+
+    # Espacio disponible para la imagen, descontando márgenes y el encabezado/leyenda
+    page_width, page_height = letter
+    usable_width = page_width - 2 * margin
+    reserved_for_text = 70
+    max_img_height = page_height - top_margin - margin - reserved_for_text
+
+    first_page = True
+    try:
+        for item in images_data:
+            for page in item.get('pages', []):
+                if not first_page:
+                    story.append(PageBreak())
+                first_page = False
+
+                story.append(Paragraph(item['filename'], heading_style))
+                story.append(Paragraph(page['label'], caption_style))
+
+                img_bytes = page['bytes']
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
+                        tmp.write(img_bytes)
+                        tmp_path = tmp.name
+                    temp_files.append(tmp_path)
+
+                    img_w, img_h = _image_size(img_bytes)
+                    if img_w and img_h:
+                        # Escalar conservando proporción para que la imagen quepa entera
+                        # dentro del área disponible de la página, sin recortarla
+                        scale = min(usable_width / img_w, max_img_height / img_h)
+                        display_width = img_w * scale
+                        display_height = img_h * scale
+                    else:
+                        display_width = usable_width
+                        display_height = max_img_height
+
+                    rl_img = RLImage(tmp_path, width=display_width, height=display_height)
+                    rl_img.hAlign = 'CENTER'
+                    story.append(rl_img)
+                except Exception as e:
+                    story.append(Paragraph(f"Error al insertar imagen: {e}", normal_style))
+
+        doc.build(story)
+    finally:
+        # Eliminar archivos temporales después de construir el PDF
+        for tmp_path in temp_files:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
     buffer.seek(0)
     return buffer.read()

@@ -29,6 +29,11 @@ async def analizar_fotos(
     1. Aplica filtro Sobel por canal BGR (conservando color), igual que ejemplo.png
     2. Ejecuta los modelos de modelos_brightness (best_20, best_30, best_40) para detectar manchas
     3. Guarda imágenes con las detecciones marcadas
+    4. Ejecuta el análisis forense (services/photo_forensics: metadatos, doble compresión JPEG,
+       copy-move, ruido, ELA, bordes rectangulares y localizador DL opcional) y fusiona las señales
+    5. Genera "Analisis_Fotos.pdf", único contenido del ZIP. Por cada foto: original, 4 versiones
+       con brillo multiplicativo +30/40/50/60% (sin resultados de algoritmos, de menor a mayor),
+       resultado del análisis Sobel + detección de manchas y resultado forense
 
     La ruta puede ser un archivo individual o un directorio con múltiples imágenes.
     Crea carpeta Analisis_Fotos/Resultados para almacenar los resultados localmente.
@@ -41,6 +46,7 @@ async def analizar_fotos(
     import numpy as np
     from ultralytics import YOLO
     from services.grayscale_conversion_service import apply_sobel_color_filter
+    from services.photo_forensics import analyze_image, render_forensic_image
     from config import MODELS_BRIGHTNESS_DIR
 
     path = Path(file_path)
@@ -75,6 +81,9 @@ async def analizar_fotos(
             status_code=400,
             detail="La ruta no es un archivo ni un directorio válido"
         )
+
+    # En Windows el glob no distingue mayúsculas: evita procesar cada archivo dos veces
+    image_files = list({p.resolve(): p for p in image_files}.values())
 
     if not image_files:
         raise HTTPException(
@@ -112,11 +121,15 @@ async def analizar_fotos(
     resultados_dir = analysis_dir / "Resultados"
     resultados_dir.mkdir(exist_ok=True)
 
+    # Porcentajes de brillo multiplicativo para las variantes del PDF (pixel * factor)
+    brightness_percents = [60, 70, 80, 90]
+
     # Analizar cada imagen
     processed_files = []
     error_count = 0
     total_detections = 0
-
+    brightness_pdf_data = []
+    forensic_summaries = []
     for image_path in image_files:
         try:
             img = cv2.imread(str(image_path))
@@ -162,17 +175,65 @@ async def analizar_fotos(
             cv2.imwrite(str(out_path), output_img)
             processed_files.append(out_path)
 
+            # Páginas del PDF: original, 4 brillos (menor a mayor, sin resultados de algoritmos)
+            # y al final las imágenes resultado de los algoritmos
+            def _png(arr):
+                ok, enc = cv2.imencode('.png', arr)
+                return enc.tobytes() if ok else None
+
+            pdf_pages = [{'label': 'Imagen original', 'bytes': _png(img)}]
+            for pct in sorted(brightness_percents):
+                brightened_variant = np.clip(img.astype(np.float32) * (1 + pct / 100), 0, 255).astype(np.uint8)
+                brightened_variant = cv2.cvtColor(brightened_variant, cv2.COLOR_BGR2GRAY)
+                pdf_pages.append({'label': f'Brillo +{pct}% (escala de grises)', 'bytes': _png(brightened_variant)})
+            pdf_pages.append({'label': 'Resultado del análisis (Sobel + detección de manchas)',
+                              'bytes': _png(output_img)})
+
+            # Análisis forense (metadatos, JPEG, copy-move, ruido, ELA, DL) sobre la misma foto.
+            # Si falla no interrumpe el resto del análisis.
+            try:
+                forensic = analyze_image(str(image_path))
+                forensic_img = render_forensic_image(forensic["image"], forensic)
+                pdf_pages.append({'label': 'Resultado del análisis forense', 'bytes': _png(forensic_img)})
+                forensic_summaries.append({
+                    "image": image_path.name,
+                    "score": round(forensic["score"], 3),
+                    "confidence_level": forensic["confidence_level"],
+                    "probable_type": forensic["probable_type"],
+                    "regions": len(forensic["regions"]),
+                    "image_width": forensic["image_width"],
+                    "image_height": forensic["image_height"],
+                })
+            except Exception as f_err:
+                import traceback
+                print(f"ADVERTENCIA: análisis forense falló para {image_path.name}: {f_err}")
+                traceback.print_exc()
+
+            brightness_pdf_data.append({
+                'filename': image_path.name,
+                'pages': [p for p in pdf_pages if p['bytes']],
+            })
+
         except Exception as e:
             import traceback
             print(f"Error procesando {image_path.name}: {e}")
             traceback.print_exc()
             error_count += 1
 
-    # Crear archivo ZIP con todas las imágenes analizadas
+    # Generar el PDF con todas las imágenes
+    brightness_pdf_bytes = None
+    if brightness_pdf_data:
+        try:
+            from utils.video_report_generator import generate_brightness_variants_pdf
+            brightness_pdf_bytes = generate_brightness_variants_pdf(brightness_pdf_data)
+        except Exception as pdf_err:
+            print(f"ADVERTENCIA: No se pudo generar el PDF: {pdf_err}")
+
+    # El ZIP contiene únicamente el PDF
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for result_file in processed_files:
-            zip_file.write(result_file, result_file.name)
+        if brightness_pdf_bytes:
+            zip_file.writestr("Analisis_Fotos.pdf", brightness_pdf_bytes)
 
     zip_bytes = zip_buffer.getvalue()
 
@@ -197,6 +258,8 @@ async def analizar_fotos(
         "images_processed": len(processed_files),
         "images_failed": error_count,
         "total_detections": total_detections,
+        "brightness_pdf_included": bool(brightness_pdf_bytes),
+        "forensic_results": forensic_summaries,
         "message": f"Análisis completado. {len(processed_files)} imágenes procesadas, {total_detections} detecciones encontradas."
     }
 

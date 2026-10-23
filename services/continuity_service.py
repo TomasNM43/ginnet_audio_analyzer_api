@@ -6,7 +6,7 @@ matplotlib.use('Agg')  # Backend sin pantalla para servidor
 import matplotlib.pyplot as plt
 import base64
 import io
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime
 
 
@@ -35,6 +35,29 @@ def _compute_diff_pct(prev_gray: np.ndarray, curr_gray: np.ndarray) -> float:
     return float(np.mean(np.abs(
         prev_gray.astype(np.float32) - curr_gray.astype(np.float32)
     ))) / 255.0 * 100.0
+
+
+def _encode_frame_triplet(cap: cv2.VideoCapture, second: int, total_seconds: int) -> Optional[str]:
+    """Captura los frames del segundo anterior, actual y posterior, y los une en una sola imagen JPEG (base64)."""
+    def _grab(sec: int):
+        sec = max(0, min(sec, total_seconds))
+        cap.set(cv2.CAP_PROP_POS_MSEC, sec * 1000)
+        ret, frame = cap.read()
+        return frame if ret else None
+
+    frame_before = _grab(second - 1)
+    frame_during = _grab(second)
+    frame_after = _grab(second + 1)
+
+    frames = [f for f in (frame_before, frame_during, frame_after) if f is not None]
+    if len(frames) < 2:
+        return None
+
+    h, w = frames[0].shape[:2]
+    resized = [cv2.resize(f, (w, h)) for f in frames]
+    combined = np.concatenate(resized, axis=1)
+    _, buf = cv2.imencode('.jpg', combined)
+    return base64.b64encode(buf).decode('utf-8')
 
 
 def analyze_continuity(video_path: str) -> Dict:
@@ -158,6 +181,14 @@ def analyze_continuity(video_path: str) -> Dict:
         for idx, pct in enumerate(diff_pcts)
         if pct > PRIMARY_THRESHOLD_PCT
     ]
+
+    # Capturar fotogramas (anterior, del recorte y posterior) para cada posible recorte
+    if primary_discontinuities:
+        cap3 = cv2.VideoCapture(video_path)
+        for pd in primary_discontinuities:
+            pd['frames_comparison_base64'] = _encode_frame_triplet(cap3, pd['second'], total_seconds)
+        cap3.release()
+
     primary_plot_b64 = _generate_primary_plot(
         diff_pcts, os.path.basename(video_path), PRIMARY_THRESHOLD_PCT
     )

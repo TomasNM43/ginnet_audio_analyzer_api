@@ -247,6 +247,10 @@ async def continuidad_video(
         except Exception as rep_err:
             print(f"ADVERTENCIA: No se pudo generar el informe PDF: {rep_err}")
 
+        # No retornar los fotogramas de cada recorte en la respuesta JSON (solo van en el PDF)
+        for pd in result.get('primary_discontinuities', []):
+            pd.pop('frames_comparison_base64', None)
+
         # Actualizar base de datos con la ruta del reporte
         db_update_result = None
         if paquete_id is not None and informe_path:

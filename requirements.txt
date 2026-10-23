@@ -32,3 +32,8 @@ python-dotenv>=1.0.0
 
 # Utilidades
 python-dateutil>=2.9.0
+PyYAML>=6.0
+
+# Análisis forense de fotos (opcionales: mejoran metadatos y lectura exacta de coeficientes DCT)
+exifread>=3.0.0
+# jpeglib>=1.0.0   # opcional: coeficientes DCT reales (si no, se estiman con Pillow)

@@ -1,0 +1,38 @@
+# Configuración de la fusión forense. Se puede sobrescribir con:
+#   - FORENSICS_CONFIG=<ruta a otro YAML>
+#   - FORENSICS_WEIGHT_<MODULO>=<float>   (ej. FORENSICS_WEIGHT_ELA=0.1)
+#   - FORENSICS_THRESHOLD_FORGERY=<float>
+
+# "noisy_or": score = 1 - prod(1 - peso_i * score_i). Un módulo fuerte basta para un score alto.
+# "mean":     media ponderada de los módulos con señal.
+method: noisy_or
+
+# Peso (aporte máximo) de cada módulo. Orden = prioridad.
+weights:
+  metadata: 0.60
+  jpeg_double_compression: 0.70
+  copy_move_keypoints: 0.95
+  copy_move_blocks: 0.90
+  noise_residual: 0.50
+  ela: 0.20
+  rect_edges: 0.25
+  dl_localizer: 0.90
+
+# Reglas duras: fijan un piso al score global cuando se cumplen.
+hard_rules:
+  copy_move_keypoints_min_inliers: 15
+  copy_move_keypoints_floor: 0.90
+  copy_move_blocks_min_votes: 1500
+  copy_move_blocks_floor: 0.85
+  thumbnail_mismatch_floor: 0.75
+  editor_plus_dates_floor: 0.70
+  grid_misalignment_floor: 0.60
+
+# Umbrales
+threshold_forgery: 0.50          # score a partir del cual el tipo es "clásico"
+confidence_levels:               # límites superiores de cada nivel
+  bajo: 0.30
+  medio: 0.50
+  alto: 0.75
+min_region_score: 0.35           # regiones por debajo de este score no se devuelven
+max_regions: 20
